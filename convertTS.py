@@ -3,6 +3,15 @@ from tkinter import filedialog, messagebox
 import subprocess
 import os
 
+# 检查 ffmpeg 是否安装
+def check_ffmpeg():
+    try:
+        # 尝试运行 ffmpeg -version 命令，如果能够正常返回，则表示已安装
+        subprocess.run(["ffmpeg", "-version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+        return True
+    except FileNotFoundError:
+        return False
+
 # 转换函数
 def convert_video():
     input_file = input_file_entry.get()
@@ -15,6 +24,10 @@ def convert_video():
 
     if output_format == "请选择格式":
         messagebox.showerror("错误", "请选择转换后的格式！")
+        return
+
+    if not check_ffmpeg():
+        messagebox.showerror("错误", "您的电脑上没有安装 FFmpeg，请先安装 FFmpeg。")
         return
 
     # 如果没有选择目标路径，则默认使用与源文件相同的路径和文件名
