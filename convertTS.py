@@ -1,18 +1,53 @@
 import tkinter as tk
 from tkinter import filedialog, messagebox
+from tkinter import ttk
 import subprocess
 import os
+import sys
+import threading
+import queue
 
-# 检查 ffmpeg 是否安装
+# 检查 ffmpeg 是否可用
 def check_ffmpeg():
-    try:
-        # 尝试运行 ffmpeg -version 命令，如果能够正常返回，则表示已安装
-        subprocess.run(["ffmpeg", "-version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
-        return True
-    except FileNotFoundError:
-        return False
+    ffmpeg_path = os.path.join(os.getcwd(), 'src', 'ffmpeg')  # ffmpeg 相对路径
+    if os.path.exists(ffmpeg_path):
+        return ffmpeg_path
+    else:
+        return None
 
-# 转换函数
+# 更新进度条的函数
+def update_progress(progress_value):
+    progress_bar['value'] = progress_value
+    root.update_idletasks()
+
+# 转换视频文件的线程函数
+def convert_video_thread(input_file, output_file, ffmpeg_path, output_format, progress_queue):
+    try:
+        # 使用 FFmpeg 执行转换命令并获取输出进度
+        command = [ffmpeg_path, "-i", input_file, "-c:v", "libx264", "-c:a", "aac", "-progress", "pipe:1", output_file]
+        
+        # 启动子进程
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+
+        # 处理进度信息
+        while process.poll() is None:
+            line = process.stdout.readline()
+            if 'frame=' in line:  # 获取进度行
+                # 从进度信息中提取已处理的帧数
+                frame_info = line.strip().split('=')[-1].strip()
+                if frame_info.isdigit():
+                    frame_count = int(frame_info)
+                    progress_queue.put(min(frame_count, 100))
+        
+        # 等待 FFmpeg 完成转换
+        process.communicate()
+
+        # 转换结束后返回
+        progress_queue.put("done")
+    except subprocess.CalledProcessError:
+        progress_queue.put("error")
+
+# 转换视频文件并显示进度
 def convert_video():
     input_file = input_file_entry.get()
     output_file = output_file_entry.get()
@@ -26,8 +61,9 @@ def convert_video():
         messagebox.showerror("错误", "请选择转换后的格式！")
         return
 
-    if not check_ffmpeg():
-        messagebox.showerror("错误", "您的电脑上没有安装 FFmpeg，请先安装 FFmpeg。")
+    ffmpeg_path = check_ffmpeg()
+    if not ffmpeg_path:
+        messagebox.showerror("错误", "无法找到 FFmpeg 可执行文件，请确保 'src/ffmpeg' 存在。")
         return
 
     # 如果没有选择目标路径，则默认使用与源文件相同的路径和文件名
@@ -37,15 +73,49 @@ def convert_video():
         output_file_entry.delete(0, tk.END)
         output_file_entry.insert(0, output_file)
 
-    # 使用 FFmpeg 执行转换命令
-    try:
-        command = f'ffmpeg -i "{input_file}" -c:v libx264 -c:a aac "{output_file}"'
-        subprocess.run(command, shell=True, check=True)
-        messagebox.showinfo("成功", f"文件转换成功！保存为：{output_file}")
-    except subprocess.CalledProcessError:
-        messagebox.showerror("错误", "转换过程中出现问题，请检查输入和输出文件路径。")
+    # 更新进度条
+    progress_bar['value'] = 0
+    root.update_idletasks()
 
-# 选择文件函数
+    # 创建队列用于线程间通信
+    progress_queue = queue.Queue()
+
+    # 启动视频转换线程
+    thread = threading.Thread(target=convert_video_thread, args=(input_file, output_file, ffmpeg_path, output_format, progress_queue))
+    thread.daemon = True  # 主程序退出时自动退出该线程
+    thread.start()
+
+    # 线程循环监听进度信息
+    def check_progress():
+        try:
+            while True:
+                progress = progress_queue.get_nowait()
+                if isinstance(progress, int):
+                    update_progress(progress)  # 更新进度条
+                elif progress == "done":
+                    messagebox.showinfo("成功", f"文件转换成功！保存为：{output_file}")
+                    if messagebox.askyesno("打开文件夹", "转换完成！是否打开文件夹？"):
+                        open_folder(os.path.dirname(output_file))
+                    return
+                elif progress == "error":
+                    messagebox.showerror("错误", "转换过程中出现问题，请检查输入和输出文件路径。")
+                    return
+        except queue.Empty:
+            root.after(100, check_progress)  # 等待 100ms 后继续检查进度
+
+    # 开始检查进度
+    check_progress()
+
+# 打开转换后的文件夹
+def open_folder(folder_path):
+    if sys.platform == "win32":  # Windows
+        os.startfile(folder_path)
+    elif sys.platform == "darwin":  # macOS
+        subprocess.run(["open", folder_path])
+    else:  # Linux
+        subprocess.run(["xdg-open", folder_path])
+
+# 选择 TS 文件
 def select_input_file():
     file_path = filedialog.askopenfilename(filetypes=[("TS 文件", "*.ts")])
     if file_path:
@@ -58,7 +128,7 @@ def select_input_file():
         output_file_entry.delete(0, tk.END)
         output_file_entry.insert(0, os.path.join(default_output_path, default_output_file))
 
-# 选择保存路径函数
+# 选择保存路径
 def select_output_file():
     input_file = input_file_entry.get()
     if input_file:
@@ -120,8 +190,15 @@ format_menu.grid(row=2, column=1, padx=10, pady=5, sticky="w")
 # 绑定格式选择变化
 format_var.trace("w", update_output_extension)
 
+# 进度条
+progress_label = tk.Label(root, text="转换进度：")
+progress_label.grid(row=3, column=0, padx=10, pady=10, sticky="e")
+
+progress_bar = ttk.Progressbar(root, length=300, mode="determinate", maximum=100)
+progress_bar.grid(row=3, column=1, padx=10, pady=10, sticky="w")
+
 # 转换按钮
 convert_button = tk.Button(root, text="开始转换", command=convert_video)
-convert_button.grid(row=3, column=0, columnspan=3, pady=20)
+convert_button.grid(row=4, column=0, columnspan=3, pady=20)
 
 root.mainloop()
