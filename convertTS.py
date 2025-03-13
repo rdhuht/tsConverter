@@ -31,7 +31,11 @@ def convert_video_thread(input_file, output_file, ffmpeg_path, output_format, pr
 
         # 处理进度信息
         while process.poll() is None:
-            line = process.stdout.readline()
+            # 检查 stdout 是否为 None
+            if process.stdout:
+                line = process.stdout.readline()
+            else:
+                line = ""
             if 'frame=' in line:  # 获取进度行
                 # 从进度信息中提取已处理的帧数
                 frame_info = line.strip().split('=')[-1].strip()
